@@ -7,14 +7,14 @@
 <style>
   body {
     font-family: sans-serif;
-    max-width: 700px;
+    max-width: 450px;
     margin: 40px auto;
     padding: 0 20px;
     background: #fff;
     color: #111;
     text-align: center;
   }
-  h1 { font-size: 1.4rem; margin-bottom: 16px; }
+  h1 { font-size: 1.6rem; margin-bottom: 16px; }
   button {
     display: block;
     margin: 0 auto 16px;
@@ -31,9 +31,9 @@
     font-size: 0.65rem; color: #999; background: #f9f9f9;
   }
   .pool-piece.selected { border-color: #333; color: #333; background: #f0f0f0; }
-  .radio-group { margin-bottom: 16px; font-size: 0.85rem; color: #444; }
-  .radio-group legend { margin-bottom: 6px; font-size: 0.85rem; color: #444; }
-  .radio-group label { display: block; margin: 0 10px; cursor: pointer; }
+  .radio-group { margin-bottom: 16px; font-size: 0.85rem; color: #444; border: none; padding: 0; }
+  .radio-group legend { margin-bottom: 6px; font-size: 0.85rem; color: #444; width: 100%; text-align: center; font-size: 1.15rem; font-weight: bold; }
+  .radio-group label { display: block; margin: 4px 0; cursor: pointer; }
   #info { font-size: 0.85rem; color: #444; margin-bottom: 12px; line-height: 1.6; }
   canvas { display: inline-block; border: 1px solid #ddd; }
 </style>
@@ -42,14 +42,15 @@
 
 <h1>Fresh Fish Board Randomizer</h1>
 
-<button onclick="run()">&#8635; Randomize</button>
-
 <fieldset class="radio-group">
-  <legend>Truck placement:</legend>
-  <label><input type="radio" name="letterMode" value="edge" checked> One per tile, on the edges</label>
-  <label><input type="radio" name="letterMode" value="random-piece"> One per tile, random placement</label>
-  <label><input type="radio" name="letterMode" value="random"> Completely random placement</label>
+  <legend>Players</legend>
+  <label><input type="radio" name="playerCount" value="2"> 2 players</label>
+  <label><input type="radio" name="playerCount" value="3"> 3 players</label>
+  <label><input type="radio" name="playerCount" value="4"> 4 players</label>
+  <label><input type="radio" name="playerCount" value="5"> 5 players</label>
 </fieldset>
+
+<button onclick="run()">&#8635; Randomize</button>
 
 <div class="pool-section">
   <div class="pool" id="pool-vis"></div>
@@ -58,11 +59,18 @@
 <div id="info"></div>
 <canvas id="c"></canvas>
 
+<fieldset class="radio-group">
+  <legend>Truck placement</legend>
+  <label><input type="radio" name="letterMode" value="edge" checked> One per tile, on the edges</label>
+  <label><input type="radio" name="letterMode" value="random-piece"> One per tile, random placement</label>
+  <label><input type="radio" name="letterMode" value="random"> Completely random placement</label>
+</fieldset>
+
 <script>
 const ALL_PIECES    = [[3,4],[3,5],[3,6],[3,7],[4,4],[4,4],[4,5]];
 const LABELS        = ['3×4','3×5','3×6','3×7','4×4','4×4','4×5'];
-const PIECE_FILLS   = ['#dbeafe','#fce7f3','#d1fae5','#fef3c7'];
-const PIECE_BORDERS = ['#3b82f6','#ec4899','#10b981','#f59e0b'];
+const PIECE_FILLS   = ['#dbeafe','#fce7f3','#d1fae5','#fef3c7','#ede9fe','#ffedd5'];
+const PIECE_BORDERS = ['#3b82f6','#ec4899','#10b981','#f59e0b','#8b5cf6','#f97316'];
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -75,8 +83,8 @@ function shuffle(arr) {
   return a;
 }
 
-function pickFour() {
-  return shuffle([0,1,2,3,4,5,6]).slice(0,4);
+function pickN(n) {
+  return shuffle([0,1,2,3,4,5,6]).slice(0, n);
 }
 
 function permutations(arr) {
@@ -271,7 +279,9 @@ function isBetter(a, b) {
 // Recursive search: place pieces[idx] somewhere valid, recurse
 function search(pieces, idx, placements, best) {
   if (idx === pieces.length) {
-    // Every piece must touch at least 2 others
+    // Every piece must touch at least minTouch others
+    // With 3 pieces a chain is unavoidable so min is 1; with 4+ require 2
+    const minTouch = placements.length >= 4 ? 2 : 1;
     for (let i = 0; i < placements.length; i++) {
       const p = placements[i];
       let touchCount = 0;
@@ -280,7 +290,7 @@ function search(pieces, idx, placements, best) {
         const q = placements[j];
         if (touches(p.r,p.c,p.w,p.h, q.r,q.c,q.w,q.h)) touchCount++;
       }
-      if (touchCount < 2) return;
+      if (touchCount < minTouch) return;
     }
 
     const ev = evaluate(placements);
@@ -315,7 +325,7 @@ function search(pieces, idx, placements, best) {
 function bestLayout(pieces) {
   const best = {};
 
-  for (const perm of permutations([0,1,2,3])) {
+  for (const perm of permutations(pieces.map((_,i)=>i))) {
     const orOptions = perm.map(i => orientations(pieces[i]));
     let orCombos = [[]];
     for (const opts of orOptions) {
@@ -329,63 +339,188 @@ function bestLayout(pieces) {
   return best.placements ? best : null;
 }
 
+// ── column stagger ────────────────────────────────────────────────────────────
+// After finding the best layout, try shifting each independent vertical "column"
+// of pieces by a random offset. A column is a maximal set of pieces sharing the
+// same left/right column coordinate band. We shift the whole column up or down
+// as long as:
+//   1. No overlap with other pieces
+//   2. All touched relationships are preserved (touching count doesn't drop)
+//   3. The bounding box perimeter does not increase
+
+function staggerColumns(placements, W, H) {
+  // Work on a copy
+  let ps = placements.map(p => ({...p}));
+
+  // Find groups of pieces that form independent vertical strips by their column range.
+  // We do a simple approach: identify pieces that don't share any column coordinate
+  // with pieces in other groups — i.e. their horizontal extents don't overlap.
+  // Sort by left edge, greedily group overlapping horizontal spans.
+  const sorted = [...ps.map((_,i)=>i)].sort((a,b) => ps[a].c - ps[b].c);
+  const groups = [];
+  for (const i of sorted) {
+    const p = ps[i];
+    let placed = false;
+    for (const g of groups) {
+      // Check if this piece horizontally overlaps any piece in g
+      for (const j of g) {
+        const q = ps[j];
+        if (p.c < q.c + q.w && p.c + p.w > q.c) {
+          g.push(i); placed = true; break;
+        }
+      }
+      if (placed) break;
+    }
+    if (!placed) groups.push([i]);
+  }
+
+  // For each group, try a random vertical offset from -maxShift to +maxShift
+  const maxShift = 3;
+  const offsets = shuffle([...Array.from({length: maxShift*2+1}, (_,i) => i - maxShift)].filter(o => o !== 0));
+
+  for (const group of groups) {
+    for (const offset of offsets) {
+      // Check all pieces in group can shift by offset without going negative
+      if (group.some(i => ps[i].r + offset < 0)) continue;
+
+      // Check no overlap with pieces outside this group
+      const outside = ps.map((_,i)=>i).filter(i => !group.includes(i));
+      let ok = true;
+      for (const i of group) {
+        const p = ps[i];
+        for (const j of outside) {
+          const q = ps[j];
+          if (overlaps(p.r+offset, p.c, p.w, p.h, q.r, q.c, q.w, q.h)) { ok = false; break; }
+        }
+        if (!ok) break;
+      }
+      if (!ok) continue;
+
+      // Check perimeter doesn't increase
+      const shifted = ps.map((p,i) => group.includes(i) ? {...p, r: p.r+offset} : p);
+      let newMaxR = 0, newMaxC = 0;
+      for (const p of shifted) {
+        if (p.r+p.h > newMaxR) newMaxR = p.r+p.h;
+        if (p.c+p.w > newMaxC) newMaxC = p.c+p.w;
+      }
+      if (2*(newMaxR+newMaxC) > 2*(H+W)) continue;
+
+      // Check all pieces still touch at least one other (connectivity preserved)
+      let touchOk = true;
+      for (const i of shifted.map((_,idx)=>idx)) {
+        const p = shifted[i];
+        const tc = shifted.filter((_,j)=>j!==i).filter(q => touches(p.r,p.c,p.w,p.h,q.r,q.c,q.w,q.h)).length;
+        const minT = shifted.length >= 4 ? 2 : 1;
+        if (tc < minT) { touchOk = false; break; }
+      }
+      if (!touchOk) continue;
+
+      // Apply this offset and move on to next group
+      ps = shifted;
+      break;
+    }
+  }
+
+  return ps;
+}
+
 // ── label placement ───────────────────────────────────────────────────────────
 
 const ITEM_NAMES = ['soda', 'ice cream', 'cheese', 'fish'];
 
-// Returns edge cells of a piece (cells on its outer border within the bounding box)
-function edgeCells(p, W, H) {
-  const cells = [];
-  for (let dr = 0; dr < p.h; dr++) {
-    for (let dc = 0; dc < p.w; dc++) {
-      const r = p.r + dr, c = p.c + dc;
-      // Cell is on the piece's own edge if it's on any of the 4 sides of the piece rect
-      const onEdge = dr === 0 || dr === p.h-1 || dc === 0 || dc === p.w-1;
-      if (onEdge) cells.push({r, c});
+// Check that all empty cells (non-truck) are connected (4-connected flood fill).
+function emptyConnected(placements, truckCells, W, H) {
+  const occ = buildOccupancy(placements, W, H);
+  // Mark truck cells as occupied for connectivity purposes
+  const blocked = occ.map(row => Uint8Array.from(row));
+  for (const {r, c} of truckCells) {
+    if (r >= 0 && r < H && c >= 0 && c < W) blocked[r][c] = 1;
+  }
+  // Find first empty cell
+  let startR = -1, startC = -1;
+  outer: for (let r = 0; r < H; r++)
+    for (let c = 0; c < W; c++)
+      if (!blocked[r][c]) { startR = r; startC = c; break outer; }
+  if (startR === -1) return true; // no empty cells, trivially connected
+
+  // Flood fill
+  const visited = Array.from({length: H}, () => new Uint8Array(W));
+  const queue = [[startR, startC]];
+  visited[startR][startC] = 1;
+  let count = 1;
+  while (queue.length) {
+    const [r, c] = queue.pop();
+    for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+      const nr = r+dr, nc = c+dc;
+      if (nr<0||nr>=H||nc<0||nc>=W) continue;
+      if (blocked[nr][nc] || visited[nr][nc]) continue;
+      visited[nr][nc] = 1; count++; queue.push([nr,nc]);
     }
   }
-  return cells;
+  // Count total empty cells
+  let total = 0;
+  for (let r = 0; r < H; r++)
+    for (let c = 0; c < W; c++)
+      if (!blocked[r][c]) total++;
+  return count === total;
 }
 
 function getLetterCells(placements, mode, W, H) {
+  const N = 4;
+  const occ = buildOccupancy(placements, W, H);
+
+  function isOuter(r, c) {
+    return r === 0 || r === H-1 || c === 0 || c === W-1 ||
+      !occ[r-1][c] || !occ[r+1][c] || !occ[r][c-1] || !occ[r][c+1];
+  }
+
+  function cellsOf(p) {
+    const cells = [];
+    for (let dr = 0; dr < p.h; dr++)
+      for (let dc = 0; dc < p.w; dc++)
+        cells.push({r: p.r+dr, c: p.c+dc});
+    return cells;
+  }
+
+  // Build a tile assignment of exactly N slots, cycling through tiles if needed
+  function tileAssignment() {
+    const base = shuffle(placements.map((_,i)=>i));
+    const result = [...base];
+    while (result.length < N) result.push(...shuffle(placements.map((_,i)=>i)));
+    return result.slice(0, N);
+  }
+
   if (mode === 'edge') {
-    // One per tile, chosen from cells that sit on the outer perimeter of the whole layout.
-    // Build occupancy to know which cells are filled, then for each piece pick a random
-    // cell that is on the outer edge of the overall shape (adjacent to empty or bbox border).
-    const occ = buildOccupancy(placements, W, H);
-    return placements.map(p => {
-      const outer = [];
-      for (let dr = 0; dr < p.h; dr++) {
-        for (let dc = 0; dc < p.w; dc++) {
-          const r = p.r + dr, c = p.c + dc;
-          // Cell is on the outer perimeter if any of its 4 neighbours is outside the
-          // bounding box or is an empty cell
-          const exposed =
-            r === 0 || r === H-1 || c === 0 || c === W-1 ||
-            !occ[r-1][c] || !occ[r+1][c] || !occ[r][c-1] || !occ[r][c+1];
-          if (exposed) outer.push({r, c});
-        }
-      }
-      return shuffle(outer.length ? outer : [{r: p.r, c: p.c}])[0];
+    // One per tile, on outer perimeter
+    const tileOrder = tileAssignment();
+    const used = new Set();
+    return tileOrder.map(ti => {
+      const pool = shuffle(cellsOf(placements[ti]).filter(({r,c}) => isOuter(r,c)));
+      const cell = pool.find(({r,c}) => !used.has(r+','+c)) || pool[0];
+      used.add(cell.r+','+cell.c);
+      return cell;
     });
   } else if (mode === 'random-piece') {
-    // One per piece, any cell in that piece
-    return placements.map(p => {
-      const cells = [];
-      for (let dr = 0; dr < p.h; dr++)
-        for (let dc = 0; dc < p.w; dc++)
-          cells.push({r: p.r+dr, c: p.c+dc});
-      return shuffle(cells)[0];
+    // One per tile, any cell
+    const tileOrder = tileAssignment();
+    const used = new Set();
+    return tileOrder.map(ti => {
+      const pool = shuffle(cellsOf(placements[ti]));
+      const cell = pool.find(({r,c}) => !used.has(r+','+c)) || pool[0];
+      used.add(cell.r+','+cell.c);
+      return cell;
     });
   } else {
-    // Completely random: pick 4 distinct cells from anywhere
-    const all = [];
-    placements.forEach(p => {
-      for (let dr = 0; dr < p.h; dr++)
-        for (let dc = 0; dc < p.w; dc++)
-          all.push({r: p.r+dr, c: p.c+dc});
-    });
-    return shuffle(all).slice(0, 4);
+    // Completely random: 4 distinct cells from anywhere
+    const all = shuffle(placements.flatMap(p => cellsOf(p)));
+    const used = new Set();
+    const result = [];
+    for (const cell of all) {
+      const key = cell.r+','+cell.c;
+      if (!used.has(key)) { used.add(key); result.push(cell); }
+      if (result.length === N) break;
+    }
+    return result;
   }
 }
 
@@ -393,8 +528,18 @@ function getLetterCells(placements, mode, W, H) {
 
 const CELL = 36, PAD = 16;
 
-function render(layout) {
-  const {placements, W, H} = layout;
+function render(layout, indices) {
+  let {placements, W, H} = layout;
+
+  // Apply column stagger
+  placements = staggerColumns(placements, W, H);
+  // Recompute W/H after stagger
+  W = 0; H = 0;
+  for (const p of placements) {
+    if (p.r+p.h > H) H = p.r+p.h;
+    if (p.c+p.w > W) W = p.c+p.w;
+  }
+
   const mode = document.querySelector('input[name="letterMode"]:checked').value;
   const canvas = document.getElementById('c');
   const ctx = canvas.getContext('2d');
@@ -474,13 +619,20 @@ function updatePool(selSet) {
 // ── main ──────────────────────────────────────────────────────────────────────
 
 let lastLayout = null;
+let lastIndices = [];
 
 document.querySelectorAll('input[name="letterMode"]').forEach(r =>
-  r.addEventListener('change', () => { if (lastLayout) render(lastLayout); })
+  r.addEventListener('change', () => { if (lastLayout) render(lastLayout, lastIndices); })
+);
+
+document.querySelectorAll('input[name="playerCount"]').forEach(r =>
+  r.addEventListener('change', () => run())
 );
 
 function run() {
-  const indices = pickFour();
+  const players = parseInt(document.querySelector('input[name="playerCount"]:checked').value);
+  const tileCount = players + 1;
+  const indices = pickN(tileCount);
   const pieces  = indices.map(i => ALL_PIECES[i]);
   updatePool(new Set(indices));
   document.getElementById('info').textContent = 'Calculating…';
@@ -489,9 +641,10 @@ function run() {
   setTimeout(() => {
     const layout = bestLayout(pieces);
     const info = document.getElementById('info');
-    if (!layout) { info.textContent = 'No layout found.'; return; }
+    if (!layout) { info.textContent = 'No layout found — try again.'; return; }
 
     lastLayout = layout;
+    lastIndices = indices;
     info.textContent = '';
 
     console.log('Selected:', indices.map(i=>LABELS[i]).join(', '));
@@ -499,12 +652,11 @@ function run() {
     console.log('Perimeter:', layout.perimeter);
     console.log('Squareness:', (layout.squareness*100).toFixed(1) + '%');
 
-    render(layout);
+    render(layout, indices);
   }, 20);
 }
 
 updatePool(new Set());
-run();
 </script>
 </body>
 </html>
