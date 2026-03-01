@@ -554,11 +554,11 @@ function render(layout, indices) {
     const x = PAD + p.c*CELL, y = PAD + p.r*CELL;
     const pw = p.w*CELL, ph = p.h*CELL;
 
-    ctx.fillStyle = PIECE_FILLS[pi%4];
+    ctx.fillStyle = PIECE_FILLS[pi];
     ctx.fillRect(x, y, pw, ph);
 
     // inner grid lines
-    ctx.strokeStyle = PIECE_BORDERS[pi%4] + '55';
+    ctx.strokeStyle = PIECE_BORDERS[pi] + '55';
     ctx.lineWidth = 0.5;
     for (let dc=1; dc<p.w; dc++) { ctx.beginPath(); ctx.moveTo(x+dc*CELL,y); ctx.lineTo(x+dc*CELL,y+ph); ctx.stroke(); }
     for (let dr=1; dr<p.h; dr++) { ctx.beginPath(); ctx.moveTo(x,y+dr*CELL); ctx.lineTo(x+pw,y+dr*CELL); ctx.stroke(); }
