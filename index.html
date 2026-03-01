@@ -44,19 +44,19 @@
 
 <button onclick="run()">&#8635; Randomize</button>
 
-<fieldset class="radio-group">
-  <legend>Truck placement:</legend>
-  <label><input type="radio" name="letterMode" value="edge" checked> One per tile, on the edges</label>
-  <label><input type="radio" name="letterMode" value="random-piece"> One per tile, random placement</label>
-  <label><input type="radio" name="letterMode" value="random"> Completely random placement</label>
-</fieldset>
-
 <div class="pool-section">
   <div class="pool" id="pool-vis"></div>
 </div>
 
 <div id="info"></div>
 <canvas id="c"></canvas>
+
+<fieldset class="radio-group">
+  <legend>Truck placement:</legend>
+  <label><input type="radio" name="letterMode" value="edge" checked> One per tile, on the edges</label>
+  <label><input type="radio" name="letterMode" value="random-piece"> One per tile, random placement</label>
+  <label><input type="radio" name="letterMode" value="random"> Completely random placement</label>
+</fieldset>
 
 <script>
 const ALL_PIECES    = [[3,4],[3,5],[3,6],[3,7],[4,4],[4,4],[4,5]];
