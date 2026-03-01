@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fresh Fish Board Randomizer</title>
+<style>
+  body {
+    font-family: sans-serif;
+    max-width: 700px;
+    margin: 40px auto;
+    padding: 0 20px;
+    background: #fff;
+    color: #111;
+    text-align: center;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 16px; }
+  button {
+    display: block;
+    margin: 0 auto 16px;
+    padding: 8px 20px; font-size: 0.9rem; cursor: pointer;
+    border: 1px solid #333; background: #333; color: #fff;
+    border-radius: 3px;
+  }
+  button:hover { background: #555; }
+  .pool-section { margin-bottom: 16px; }
+  .pool { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; justify-content: center; }
+  .pool-piece {
+    border: 1px solid #ccc;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.65rem; color: #999; background: #f9f9f9;
+  }
+  .pool-piece.selected { border-color: #333; color: #333; background: #f0f0f0; }
+  .radio-group { margin-bottom: 16px; font-size: 0.85rem; color: #444; }
+  .radio-group legend { margin-bottom: 6px; font-size: 0.85rem; color: #444; }
+  .radio-group label { display: block; margin: 0 10px; cursor: pointer; }
+  #info { font-size: 0.85rem; color: #444; margin-bottom: 12px; line-height: 1.6; }
+  canvas { display: inline-block; border: 1px solid #ddd; }
+</style>
+</head>
+<body>
+
+<h1>Fresh Fish Board Randomizer</h1>
+
+<button onclick="run()">&#8635; Randomize</button>
+
+<fieldset class="radio-group">
+  <legend>Truck placement:</legend>
+  <label><input type="radio" name="letterMode" value="edge" checked> One per tile, on the edges</label>
+  <label><input type="radio" name="letterMode" value="random-piece"> One per tile, random placement</label>
+  <label><input type="radio" name="letterMode" value="random"> Completely random placement</label>
+</fieldset>
+
+<div class="pool-section">
+  <div class="pool" id="pool-vis"></div>
+</div>
+
+<div id="info"></div>
+<canvas id="c"></canvas>
+
+<script>
+const ALL_PIECES    = [[3,4],[3,5],[3,6],[3,7],[4,4],[4,4],[4,5]];
+const LABELS        = ['3×4','3×5','3×6','3×7','4×4','4×4','4×5'];
+const PIECE_FILLS   = ['#dbeafe','#fce7f3','#d1fae5','#fef3c7'];
+const PIECE_BORDERS = ['#3b82f6','#ec4899','#10b981','#f59e0b'];
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length-1; i > 0; i--) {
+    const j = Math.floor(Math.random()*(i+1));
+    [a[i],a[j]] = [a[j],a[i]];
+  }
+  return a;
+}
+
+function pickFour() {
+  return shuffle([0,1,2,3,4,5,6]).slice(0,4);
+}
+
+function permutations(arr) {
+  if (arr.length <= 1) return [[...arr]];
+  return arr.flatMap((v,i) =>
+    permutations(arr.filter((_,j)=>j!==i)).map(p=>[v,...p])
+  );
+}
+
+function orientations([w,h]) {
+  return w===h ? [[w,h]] : [[w,h],[h,w]];
+}
+
+// ── packing core ──────────────────────────────────────────────────────────────
+//
+// Candidates: the 4 corners of each already-placed piece (plus origin).
+// This is a small fixed set that covers all compact arrangements.
+// Pieces must touch an existing piece edge-to-edge (no floating).
+// We prune branches where the partial bounding box perimeter already
+// exceeds the best complete layout found so far.
+
+function candidatePositions(placements) {
+  const pts = new Set();
+  pts.add('0,0');
+  for (const p of placements) {
+    pts.add(`${p.r},${p.c}`);
+    pts.add(`${p.r},${p.c + p.w}`);
+    pts.add(`${p.r + p.h},${p.c}`);
+    pts.add(`${p.r + p.h},${p.c + p.w}`);
+  }
+  return [...pts].map(s => s.split(',').map(Number));
+}
+
+function overlaps(r1,c1,w1,h1, r2,c2,w2,h2) {
+  return !(r1+h1 <= r2 || r2+h2 <= r1 || c1+w1 <= c2 || c2+w2 <= c1);
+}
+
+function canPlace(placements, r, c, w, h) {
+  if (r < 0 || c < 0) return false;
+  for (const p of placements) {
+    if (overlaps(r,c,w,h, p.r,p.c,p.w,p.h)) return false;
+  }
+  // First piece: always OK at origin
+  if (placements.length === 0) return true;
+  // Subsequent pieces must share at least one full edge unit with an existing piece
+  return placements.some(p => touches(r,c,w,h, p.r,p.c,p.w,p.h));
+}
+
+// Two rectangles "touch" if they share a segment of length >= 1 along an edge
+function touches(r1,c1,w1,h1, r2,c2,w2,h2) {
+  // Touching on left/right: one's right edge == other's left edge, and vertical overlap >= 1
+  if (c1+w1 === c2 || c2+w2 === c1) {
+    const overlapH = Math.min(r1+h1, r2+h2) - Math.max(r1, r2);
+    return overlapH >= 1;
+  }
+  // Touching on top/bottom: one's bottom edge == other's top edge, and horizontal overlap >= 1
+  if (r1+h1 === r2 || r2+h2 === r1) {
+    const overlapW = Math.min(c1+w1, c2+w2) - Math.max(c1, c2);
+    return overlapW >= 1;
+  }
+  return false;
+}
+
+// Build a 2D occupancy map for the placed pieces
+function buildOccupancy(placements, W, H) {
+  const grid = Array.from({length: H}, () => new Uint8Array(W));
+  for (const p of placements)
+    for (let dr = 0; dr < p.h; dr++)
+      for (let dc = 0; dc < p.w; dc++)
+        grid[p.r+dr][p.c+dc] = 1;
+  return grid;
+}
+
+// For a contiguous empty region, determine if it's a fjord.
+// A fjord is defined as: depth from the open edge > width of the opening.
+//
+// For each side (top, bottom, left, right) of the bounding box that the
+// region touches, we measure:
+//   - width of opening = how many cells of the region sit on that edge
+//   - depth = extent of the region perpendicular inward from that edge
+//
+// If ANY open side has depth > width, it's a fjord.
+// If the region is fully enclosed (touches no edge), treat it as a fjord too.
+function isRegionFjord(cells, W, H) {
+  const cellSet = new Set(cells.map(([r,c]) => r+','+c));
+  let minR = Infinity, maxR = -Infinity, minC = Infinity, maxC = -Infinity;
+  for (const [r,c] of cells) {
+    if (r < minR) minR = r; if (r > maxR) maxR = r;
+    if (c < minC) minC = c; if (c > maxC) maxC = c;
+  }
+  const bbW = maxC - minC + 1;
+  const bbH = maxR - minR + 1;
+
+  // Which bbox edges does this region touch (i.e. reach the bounding box border)?
+  const touchesTop    = minR === 0;
+  const touchesBottom = maxR === H - 1;
+  const touchesLeft   = minC === 0;
+  const touchesRight  = maxC === W - 1;
+
+  // Fully enclosed = fjord
+  if (!touchesTop && !touchesBottom && !touchesLeft && !touchesRight) return true;
+
+  // For each touched edge, compute opening width and depth
+  // and check if depth > width.
+  const checks = [];
+
+  if (touchesTop) {
+    // Opening = cells in the region on row minR (=0), width = count of distinct columns there
+    const openCols = new Set(cells.filter(([r])=>r===0).map(([,c])=>c));
+    const opening = openCols.size;
+    const depth = bbH; // region extends downward from top
+    checks.push({opening, depth});
+  }
+  if (touchesBottom) {
+    const openCols = new Set(cells.filter(([r])=>r===H-1).map(([,c])=>c));
+    const opening = openCols.size;
+    const depth = bbH;
+    checks.push({opening, depth});
+  }
+  if (touchesLeft) {
+    const openRows = new Set(cells.filter(([,c])=>c===0).map(([r])=>r));
+    const opening = openRows.size;
+    const depth = bbW;
+    checks.push({opening, depth});
+  }
+  if (touchesRight) {
+    const openRows = new Set(cells.filter(([,c])=>c===W-1).map(([r])=>r));
+    const opening = openRows.size;
+    const depth = bbW;
+    checks.push({opening, depth});
+  }
+
+  // It's a fjord if ALL open sides have depth > opening width
+  // (if any side is "wide enough" to not be a fjord, it passes)
+  return checks.every(({opening, depth}) => depth > opening);
+}
+
+function hasFjord(placements, W, H) {
+  const grid = buildOccupancy(placements, W, H);
+  const visited = Array.from({length: H}, () => new Uint8Array(W));
+
+  for (let r0 = 0; r0 < H; r0++) {
+    for (let c0 = 0; c0 < W; c0++) {
+      if (grid[r0][c0] || visited[r0][c0]) continue;
+
+      // BFS to collect the contiguous empty region
+      const queue = [[r0, c0]];
+      visited[r0][c0] = 1;
+      const cells = [[r0, c0]];
+
+      while (queue.length) {
+        const [r, c] = queue.pop();
+        for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+          const nr = r+dr, nc = c+dc;
+          if (nr < 0 || nr >= H || nc < 0 || nc >= W) continue;
+          if (grid[nr][nc] || visited[nr][nc]) continue;
+          visited[nr][nc] = 1;
+          queue.push([nr, nc]);
+          cells.push([nr, nc]);
+        }
+      }
+
+      if (isRegionFjord(cells, W, H)) return true;
+    }
+  }
+  return false;
+}
+
+function evaluate(placements) {
+  let maxR = 0, maxC = 0;
+  for (const p of placements) {
+    if (p.r+p.h > maxR) maxR = p.r+p.h;
+    if (p.c+p.w > maxC) maxC = p.c+p.w;
+  }
+  const W = maxC, H = maxR;
+  const perimeter  = 2 * (W + H);
+  const squareness = Math.min(W,H) / Math.max(W,H);
+  return { W, H, perimeter, squareness };
+}
+
+// Prefer smaller perimeter. Among equal perimeters, prefer squareness >= 0.7.
+// If both/neither meet the 0.7 threshold, prefer higher squareness.
+function isBetter(a, b) {
+  if (b.perimeter === undefined) return true;
+  if (a.perimeter !== b.perimeter) return a.perimeter < b.perimeter;
+  // same perimeter — prefer the one that meets the 70% threshold, or is squarer
+  const aOk = a.squareness >= 0.7, bOk = b.squareness >= 0.7;
+  if (aOk !== bOk) return aOk;
+  return a.squareness > b.squareness;
+}
+
+// Recursive search: place pieces[idx] somewhere valid, recurse
+function search(pieces, idx, placements, best) {
+  if (idx === pieces.length) {
+    // Every piece must touch at least 2 others
+    for (let i = 0; i < placements.length; i++) {
+      const p = placements[i];
+      let touchCount = 0;
+      for (let j = 0; j < placements.length; j++) {
+        if (i === j) continue;
+        const q = placements[j];
+        if (touches(p.r,p.c,p.w,p.h, q.r,q.c,q.w,q.h)) touchCount++;
+      }
+      if (touchCount < 2) return;
+    }
+
+    const ev = evaluate(placements);
+    if (hasFjord(placements, ev.W, ev.H)) return;
+    if (isBetter(ev, best)) {
+      best.perimeter  = ev.perimeter;
+      best.squareness = ev.squareness;
+      best.W = ev.W; best.H = ev.H;
+      best.placements = placements.map(p => ({...p}));
+    }
+    return;
+  }
+
+  const [w, h] = pieces[idx];
+  const candidates = candidatePositions(placements);
+
+  for (const [r, c] of candidates) {
+    if (!canPlace(placements, r, c, w, h)) continue;
+
+    placements.push({w, h, r, c});
+
+    // Prune: if partial bounding box perimeter already exceeds best complete layout, skip
+    const ev = evaluate(placements);
+    if (best.perimeter === undefined || ev.perimeter <= best.perimeter) {
+      search(pieces, idx+1, placements, best);
+    }
+
+    placements.pop();
+  }
+}
+
+function bestLayout(pieces) {
+  const best = {};
+
+  for (const perm of permutations([0,1,2,3])) {
+    const orOptions = perm.map(i => orientations(pieces[i]));
+    let orCombos = [[]];
+    for (const opts of orOptions) {
+      orCombos = orCombos.flatMap(c => opts.map(o => [...c, o]));
+    }
+    for (const ors of orCombos) {
+      search(ors, 0, [], best);
+    }
+  }
+
+  return best.placements ? best : null;
+}
+
+// ── label placement ───────────────────────────────────────────────────────────
+
+const ITEM_NAMES = ['soda', 'ice cream', 'cheese', 'fish'];
+
+// Returns edge cells of a piece (cells on its outer border within the bounding box)
+function edgeCells(p, W, H) {
+  const cells = [];
+  for (let dr = 0; dr < p.h; dr++) {
+    for (let dc = 0; dc < p.w; dc++) {
+      const r = p.r + dr, c = p.c + dc;
+      // Cell is on the piece's own edge if it's on any of the 4 sides of the piece rect
+      const onEdge = dr === 0 || dr === p.h-1 || dc === 0 || dc === p.w-1;
+      if (onEdge) cells.push({r, c});
+    }
+  }
+  return cells;
+}
+
+function getLetterCells(placements, mode, W, H) {
+  if (mode === 'edge') {
+    // One per tile, chosen from cells that sit on the outer perimeter of the whole layout.
+    // Build occupancy to know which cells are filled, then for each piece pick a random
+    // cell that is on the outer edge of the overall shape (adjacent to empty or bbox border).
+    const occ = buildOccupancy(placements, W, H);
+    return placements.map(p => {
+      const outer = [];
+      for (let dr = 0; dr < p.h; dr++) {
+        for (let dc = 0; dc < p.w; dc++) {
+          const r = p.r + dr, c = p.c + dc;
+          // Cell is on the outer perimeter if any of its 4 neighbours is outside the
+          // bounding box or is an empty cell
+          const exposed =
+            r === 0 || r === H-1 || c === 0 || c === W-1 ||
+            !occ[r-1][c] || !occ[r+1][c] || !occ[r][c-1] || !occ[r][c+1];
+          if (exposed) outer.push({r, c});
+        }
+      }
+      return shuffle(outer.length ? outer : [{r: p.r, c: p.c}])[0];
+    });
+  } else if (mode === 'random-piece') {
+    // One per piece, any cell in that piece
+    return placements.map(p => {
+      const cells = [];
+      for (let dr = 0; dr < p.h; dr++)
+        for (let dc = 0; dc < p.w; dc++)
+          cells.push({r: p.r+dr, c: p.c+dc});
+      return shuffle(cells)[0];
+    });
+  } else {
+    // Completely random: pick 4 distinct cells from anywhere
+    const all = [];
+    placements.forEach(p => {
+      for (let dr = 0; dr < p.h; dr++)
+        for (let dc = 0; dc < p.w; dc++)
+          all.push({r: p.r+dr, c: p.c+dc});
+    });
+    return shuffle(all).slice(0, 4);
+  }
+}
+
+// ── render ────────────────────────────────────────────────────────────────────
+
+const CELL = 36, PAD = 16;
+
+function render(layout) {
+  const {placements, W, H} = layout;
+  const mode = document.querySelector('input[name="letterMode"]:checked').value;
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  canvas.width  = W*CELL + PAD*2;
+  canvas.height = H*CELL + PAD*2;
+
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  placements.forEach((p, pi) => {
+    const x = PAD + p.c*CELL, y = PAD + p.r*CELL;
+    const pw = p.w*CELL, ph = p.h*CELL;
+
+    ctx.fillStyle = PIECE_FILLS[pi%4];
+    ctx.fillRect(x, y, pw, ph);
+
+    // inner grid lines
+    ctx.strokeStyle = PIECE_BORDERS[pi%4] + '55';
+    ctx.lineWidth = 0.5;
+    for (let dc=1; dc<p.w; dc++) { ctx.beginPath(); ctx.moveTo(x+dc*CELL,y); ctx.lineTo(x+dc*CELL,y+ph); ctx.stroke(); }
+    for (let dr=1; dr<p.h; dr++) { ctx.beginPath(); ctx.moveTo(x,y+dr*CELL); ctx.lineTo(x+pw,y+dr*CELL); ctx.stroke(); }
+
+    ctx.strokeStyle = PIECE_BORDERS[pi%4];
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x+1, y+1, pw-2, ph-2);
+
+    ctx.fillStyle = PIECE_BORDERS[pi%4];
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(p.w + '×' + p.h, x+pw/2, y+ph/2);
+  });
+
+  // Food labels
+  const labelCells = getLetterCells(placements, mode, W, H);
+  labelCells.forEach((cell, li) => {
+    const cx = PAD + cell.c*CELL + CELL/2;
+    const cy = PAD + cell.r*CELL + CELL/2;
+    const name = ITEM_NAMES[li];
+
+    // Pill background sized to text
+    ctx.font = 'bold 9px sans-serif';
+    const tw = ctx.measureText(name).width;
+    const pw2 = tw + 10, ph2 = 16, rx = 4;
+    const bx = cx - pw2/2, by = cy - ph2/2;
+
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.roundRect(bx, by, pw2, ph2, rx);
+    ctx.fill();
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.fillStyle = '#111';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(name, cx, cy);
+  });
+}
+
+// ── pool vis ──────────────────────────────────────────────────────────────────
+
+function updatePool(selSet) {
+  const pool = document.getElementById('pool-vis');
+  pool.innerHTML = '';
+  ALL_PIECES.forEach(([w,h], i) => {
+    const div = document.createElement('div');
+    div.className = 'pool-piece' + (selSet.has(i) ? ' selected' : '');
+    div.style.width = (w*7)+'px';
+    div.style.height = (h*7)+'px';
+    div.textContent = w + '×' + h;
+    pool.appendChild(div);
+  });
+}
+
+// ── main ──────────────────────────────────────────────────────────────────────
+
+let lastLayout = null;
+
+document.querySelectorAll('input[name="letterMode"]').forEach(r =>
+  r.addEventListener('change', () => { if (lastLayout) render(lastLayout); })
+);
+
+function run() {
+  const indices = pickFour();
+  const pieces  = indices.map(i => ALL_PIECES[i]);
+  updatePool(new Set(indices));
+  document.getElementById('info').textContent = 'Calculating…';
+  document.getElementById('c').width = 0;
+
+  setTimeout(() => {
+    const layout = bestLayout(pieces);
+    const info = document.getElementById('info');
+    if (!layout) { info.textContent = 'No layout found.'; return; }
+
+    lastLayout = layout;
+    info.textContent = '';
+
+    console.log('Selected:', indices.map(i=>LABELS[i]).join(', '));
+    console.log('Bounding box:', layout.W + '×' + layout.H);
+    console.log('Perimeter:', layout.perimeter);
+    console.log('Squareness:', (layout.squareness*100).toFixed(1) + '%');
+
+    render(layout);
+  }, 20);
+}
+
+updatePool(new Set());
+run();
+</script>
+</body>
+</html>
